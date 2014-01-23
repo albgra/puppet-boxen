@@ -84,6 +84,9 @@ define boxen::project(
   $ruby          = undef,
   $phantomjs     = undef,
   $server_name   = "${name}.dev",
+  $django        = undef,
+  $custom_virtualenv_postactivate_template        = undef,
+  $custom_uwsgi_template        = undef,
 ) {
   include boxen::config
 
@@ -150,8 +153,13 @@ define boxen::project(
     include nginx::config
     include nginx
 
+    $nginx_shared_templ = $django ? {
+      true    => 'projects/shared/django-nginx.conf.erb',
+      default => 'projects/shared/nginx.conf.erb',
+    }
+
     $nginx_templ = $nginx ? {
-      true    => 'projects/shared/nginx.conf.erb',
+      true    => $nginx_shared_templ,
       default => $nginx,
     }
 
@@ -193,6 +201,66 @@ define boxen::project(
     phantomjs::local { $repo_dir:
       version => $phantomjs,
       require => Repository[$repo_dir]
+    }
+  }
+
+  if $django {
+    include karumi::environment
+
+    # Setup nodejs modules that are needed for the build
+    nodejs::module { "yuglify for ${karumi::environment::node_global}":
+      module       => 'yuglify',
+        ensure       => '0.1.4',
+        node_version => $karumi::environment::node_global,
+    }
+
+    nodejs::module { "coffee-script for ${karumi::environment::node_global}":
+      module       => 'coffee-script',
+        ensure       => '1.6.3',
+        node_version => $karumi::environment::node_global,
+    }
+
+    ruby::gem { "sass for ${karumi::environment::ruby_global}":
+      gem     => 'sass',
+      ruby    => $karumi::environment::ruby_global,
+      ensure    => 'present',
+      version   => '3.2.12',
+    }
+
+    $virtualenv_postactivate_template = $custom_virtualenv_postactivate_template ? {
+      undef      => 'projects/shared/virtualenv_postactivate.sh.erb',
+      default    => $custom_virtualenv_postactivate_template,
+    }
+
+    # Setup the virtualenv for this project
+    python::mkvirtualenv{ $name:
+      ensure      => present,
+      systempkgs  => false,
+      distribute  => true,
+      project_dir => "${boxen::config::srcdir}",
+      post_activate => template($virtualenv_postactivate_template),
+    }
+
+    # Install project requirements
+    python::requirements { "${name}-requirements":
+      requirements => "${boxen::config::srcdir}/${name}/requirements.txt",
+      virtualenv   => $name,
+      require      => [Python::Mkvirtualenv[$name], Repository[$repo_dir]],
+    }
+
+    # Copy uwsgi config so we can run the service
+    include python::config
+
+    $uwsgi_template = $custom_uwsgi_template ? {
+      undef       => 'projects/shared/uwsgi.ini.erb',
+      default     => "projects/${name}/uwsgi.ini.erb",
+    }
+
+    file { "uwsgi-${name}":
+      path    => "${boxen::config::configdir}/${name}_uwsgi.ini",
+      ensure => present,
+      mode    => '0644',
+      content => template($uwsgi_template),
     }
   }
 }
